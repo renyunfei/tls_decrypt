@@ -4,7 +4,11 @@ echo "TLS解析器演示 (TLS Parser Demo)"
 echo "======================================================================"
 echo ""
 echo "1. 检查依赖 (Checking dependencies)..."
-pip3 show dpkt | grep "Name:\|Version:" || echo "请运行: pip install -r requirements.txt"
+if pip3 show dpkt >/dev/null 2>&1; then
+    pip3 show dpkt | grep "Name:\|Version:"
+else
+    echo "❌ dpkt 未安装。请运行: pip install -r requirements.txt"
+fi
 echo ""
 echo "2. 创建示例PCAP文件 (Creating sample PCAP)..."
 python3 create_sample_pcap.py

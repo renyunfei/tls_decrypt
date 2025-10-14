@@ -14,8 +14,9 @@
 - 解析TLS记录层（Content Type, Version, Length）
 - 显示会话详细信息（源/目标IP、端口、时间戳）
 
-**关键代码**:
+**关键代码示例**:
 ```python
+# 代码片段 - 展示核心逻辑 (Code snippet - showing core logic)
 def parse_pcap(pcap_file):
     with open(pcap_file, 'rb') as f:
         pcap = dpkt.pcap.Reader(f)
@@ -25,7 +26,9 @@ def parse_pcap(pcap_file):
             tcp = ip.data
             # 检查TLS Content Type (20-23)
             if tcp.data[0] in [20, 21, 22, 23]:
-                # 解析TLS会话...
+                # 解析TLS记录并提取信息
+                record = parse_tls_record(tcp.data)
+                # ... (详见完整代码 tls_parser.py)
 ```
 
 **测试结果**: 成功识别并解析3个TLS会话
@@ -39,8 +42,9 @@ def parse_pcap(pcap_file):
 - 标注Random值来源
 - 按照TLS RFC标准解析Random字段位置
 
-**关键代码**:
+**关键代码示例**:
 ```python
+# 代码片段 - 展示核心逻辑 (Code snippet - showing core logic)
 def parse_tls_handshake(handshake_data):
     handshake_type = handshake_data[0]
     # Client Hello (0x01) 或 Server Hello (0x02)
@@ -48,6 +52,7 @@ def parse_tls_handshake(handshake_data):
         # Random在偏移6开始，长度32字节
         random_offset = 6
         random = handshake_data[random_offset:random_offset + 32]
+        return {'random': random, 'handshake_type': handshake_type}
 ```
 
 **测试结果**: 
@@ -63,10 +68,12 @@ def parse_tls_handshake(handshake_data):
 - 十六进制格式化输出
 - 每行显示16字节，字节间用空格分隔
 
-**关键代码**:
+**关键代码示例**:
 ```python
+# 代码片段 - 展示核心逻辑 (Code snippet - showing core logic)
 def parse_tls_record(record_data):
     content_type = record_data[0]
+    length = int.from_bytes(record_data[3:5], byteorder='big')
     # 23 = Application Data (加密载荷)
     if content_type == 23:
         fragment = record_data[5:5+length]
@@ -74,10 +81,13 @@ def parse_tls_record(record_data):
 
 def hex_dump(data, prefix=""):
     hex_str = data.hex()
+    formatted = ""
     # 每行16字节，以空格分隔每个字节
-    for i in range(0, len(hex_str), 32):
+    for i in range(0, len(hex_str), 32):  # 32 hex chars = 16 bytes
         line = hex_str[i:i+32]
         formatted_line = ' '.join([line[j:j+2] for j in range(0, len(line), 2)])
+        formatted += f"{prefix}{formatted_line}\n"
+    return formatted.rstrip()
 ```
 
 **测试结果**: 成功解析并以十六进制打印64字节加密载荷
