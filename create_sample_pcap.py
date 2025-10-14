@@ -177,8 +177,9 @@ def create_sample_pcap(filename='sample_tls.pcap'):
         print(f"  ✓ 添加了TCP SYN-ACK包 (三次握手 2/3)")
         
         # 3. ACK from client
-        seq_client += 1
-        seq_server += 1
+        # SYN and SYN-ACK consume one sequence number each
+        seq_client += 1  # Client's SYN consumed 1
+        seq_server += 1  # Server's SYN-ACK consumed 1
         
         tcp_ack = dpkt.tcp.TCP(
             sport=src_port,
