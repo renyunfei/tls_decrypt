@@ -26,6 +26,27 @@
 - 以十六进制格式打印，每行16字节
 - 格式化输出，便于阅读
 
+## 阶段二完成情况 (Stage 2 Completion)
+
+### ✅ PCAP转存功能 (PCAP Save Functionality)
+
+#### 功能描述
+程序现在支持将TLS加密载荷进行SHA256哈希处理后，保存到新的PCAP文件中。
+
+#### 实现的要求
+1. ✅ **通信双方的IP和端口不变** - 保持原始源/目标IP地址和端口
+2. ✅ **每个TCP包的PCAP的时间戳不变** - 精确保持原始时间戳
+3. ✅ **SHA256哈希处理** - 对加密载荷计算SHA256，将32字节哈希值作为新的TCP载荷
+
+#### 使用方法
+```bash
+# 转存PCAP文件，将加密载荷替换为SHA256哈希
+python3 tls_parser.py <input_pcap> <output_pcap>
+
+# 示例
+python3 tls_parser.py sample_tls.pcap output_hashed.pcap
+```
+
 ## 快速开始 (Quick Start)
 
 ### 1. 安装依赖
@@ -42,14 +63,23 @@ python3 create_sample_pcap.py
 - 1个ServerHello（带Random值）
 - 1个加密应用数据包
 
-### 3. 运行解析器
+### 3. 运行解析器（仅查看）
 ```bash
 python3 tls_parser.py sample_tls.pcap
 ```
 
-### 4. 运行测试验证
+### 4. 转存PCAP文件（SHA256哈希）
 ```bash
+python3 tls_parser.py sample_tls.pcap output_hashed.pcap
+```
+
+### 5. 运行测试验证
+```bash
+# 测试阶段一功能
 python3 test_parser.py
+
+# 测试阶段二（PCAP转存）功能
+python3 test_save_pcap.py
 ```
 
 ## 输出示例说明 (Output Explanation)
@@ -103,7 +133,8 @@ TLS会话 #1 (数据包 #1)
 
 ## 使用自己的PCAP文件 (Using Your Own PCAP)
 
-如果您有自己的PCAP文件：
+### 仅解析模式
+如果您想查看TLS会话信息：
 
 ```bash
 python3 tls_parser.py your_capture.pcap
@@ -115,6 +146,21 @@ python3 tls_parser.py your_capture.pcap
 3. 解析并显示所有TLS会话
 4. 提取Random值（如果有握手消息）
 5. 显示加密载荷（如果有应用数据）
+
+### 转存模式
+如果您想将加密载荷转换为SHA256哈希并保存：
+
+```bash
+python3 tls_parser.py your_capture.pcap output_hashed.pcap
+```
+
+程序会：
+1. 扫描所有数据包
+2. 识别TLS Application Data（加密载荷）
+3. 计算每个加密载荷的SHA256哈希
+4. 创建新的TCP包，载荷为32字节SHA256哈希
+5. 保持原始IP、端口和时间戳不变
+6. 保存到新的PCAP文件
 
 ## 支持的TLS版本 (Supported TLS Versions)
 
@@ -146,10 +192,36 @@ python3 tls_parser.py your_capture.pcap
 - 确认pcap文件包含TLS ApplicationData
 - 检查TLS会话是否完成握手并开始传输数据
 
+## 转存功能输出示例 (Save Functionality Output Example)
+
+```
+正在处理PCAP文件: sample_tls.pcap
+输出文件: output_hashed.pcap
+
+数据包 #3: 保存SHA256哈希 (64 bytes -> 32 bytes)
+  源地址: 192.168.1.100:54321
+  目标地址: 93.184.216.34:443
+  时间戳: 1760423629.866338
+  SHA256: f0c18679934f9a97bf750471c16f744a19678f4541a70acea12a3b899fa60c60
+
+================================================================================
+处理完成:
+  输入数据包总数: 3
+  保存到新PCAP的数据包数: 1
+  输出文件: output_hashed.pcap
+================================================================================
+```
+
+**说明：**
+- 原始加密载荷长度: 64 bytes
+- SHA256哈希长度: 32 bytes
+- 保持了原始的IP地址、端口和时间戳
+- 仅保存包含Application Data的数据包
+
 ## 下一步 (Next Steps)
 
-等待用户测试第一阶段功能。测试通过后，将进行：
-- 阶段二: 集成keylog文件
-- 阶段三: 实现解密功能
-- 阶段四: 支持国密密码套件
-- 阶段五: 输出到新的pcap文件
+已完成阶段二。后续将进行：
+- 阶段三: 集成keylog文件
+- 阶段四: 实现真正的解密功能
+- 阶段五: 支持国密密码套件
+- 阶段六: 将解密后的数据保存到PCAP文件
