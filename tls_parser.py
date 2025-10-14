@@ -126,6 +126,15 @@ def save_hashed_pcap(pcap_file, output_file):
             handshake_count = 0
             teardown_count = 0
             
+            # 跟踪TCP连接状态：是否已完成三次握手
+            # Track TCP connection state: whether 3-way handshake is complete
+            seen_syn = False
+            seen_syn_ack = False
+            handshake_complete = False
+            # 跟踪是否已开始挥手
+            # Track whether teardown has started
+            teardown_started = False
+            
             for timestamp, buf in pcap_reader:
                 packet_num += 1
                 
@@ -145,15 +154,47 @@ def save_hashed_pcap(pcap_file, output_file):
                     
                     tcp = ip.data
                     
-                    # 检查是否是TCP握手或挥手报文
-                    # 握手报文: SYN标志或无数据的ACK（握手完成）
-                    # 挥手报文: FIN标志或无数据的ACK（挥手确认）
+                    # 检查TCP标志
                     has_syn = (tcp.flags & dpkt.tcp.TH_SYN) != 0
+                    has_ack = (tcp.flags & dpkt.tcp.TH_ACK) != 0
                     has_fin = (tcp.flags & dpkt.tcp.TH_FIN) != 0
                     has_no_data = len(tcp.data) == 0
                     
-                    # 保存条件：有SYN标志、有FIN标志、或者无数据载荷（握手/挥手的ACK）
-                    is_handshake_or_teardown = has_syn or has_fin or has_no_data
+                    # 更新连接状态
+                    if has_syn and not has_ack:
+                        seen_syn = True
+                    elif has_syn and has_ack:
+                        seen_syn_ack = True
+                    elif has_fin:
+                        teardown_started = True
+                    
+                    # 判断是否应该保存此包
+                    should_save = False
+                    packet_type = ""
+                    
+                    # 保存SYN和SYN-ACK（TCP握手的前两步）
+                    if has_syn:
+                        should_save = True
+                        packet_type = "TCP握手报文"
+                    # 保存FIN包（TCP挥手）
+                    elif has_fin:
+                        should_save = True
+                        packet_type = "TCP挥手报文"
+                    # 保存纯ACK包，但只在特定情况下：
+                    # 1. TCP握手的第三个ACK（在看到SYN-ACK之后，握手尚未完成时的第一个纯ACK）
+                    # 2. TCP挥手过程中的ACK
+                    elif has_no_data and has_ack:
+                        if seen_syn_ack and not handshake_complete:
+                            # 这是TCP三次握手的第三个包
+                            should_save = True
+                            packet_type = "TCP握手报文"
+                            handshake_complete = True
+                        elif teardown_started:
+                            # 这是TCP挥手过程中的ACK
+                            should_save = True
+                            packet_type = "TCP挥手报文"
+                    
+                    is_handshake_or_teardown = should_save
                     
                     if is_handshake_or_teardown:
                         # 保存TCP握手/挥手报文（不修改）
@@ -184,24 +225,11 @@ def save_hashed_pcap(pcap_file, output_file):
                         pcap_writer.writepkt(new_eth, ts=timestamp)
                         saved_packet_num += 1
                         
-                        # 判断是握手还是挥手
-                        if has_syn:
+                        # 更新计数
+                        if packet_type == "TCP握手报文":
                             handshake_count += 1
-                            packet_type = "TCP握手报文"
-                        elif has_fin:
+                        elif packet_type == "TCP挥手报文":
                             teardown_count += 1
-                            packet_type = "TCP挥手报文"
-                        else:
-                            # 无数据的ACK，可能是握手完成或挥手确认
-                            # 简单判断：如果序列号较小，可能是握手；否则是挥手
-                            # 但为了简化，我们统一计入握手或挥手
-                            # 这里我们假设如果还没有看到FIN，就是握手相关
-                            if teardown_count > 0:
-                                teardown_count += 1
-                                packet_type = "TCP挥手报文"
-                            else:
-                                handshake_count += 1
-                                packet_type = "TCP握手报文"
                         
                         print(f"数据包 #{packet_num}: 保存{packet_type}")
                         print(f"  源地址: {dpkt.utils.inet_to_str(ip.src)}:{tcp.sport}")
