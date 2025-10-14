@@ -111,6 +111,7 @@ def save_hashed_pcap(pcap_file, output_file):
     1. 通信双方的IP和端口不变
     2. 每个TCP包的PCAP的时间戳不变
     3. TCP载荷为原始加密载荷的SHA256哈希值
+    4. 保存TCP三次握手和四次挥手报文
     """
     print(f"正在处理PCAP文件: {pcap_file}")
     print(f"输出文件: {output_file}\n")
@@ -122,6 +123,8 @@ def save_hashed_pcap(pcap_file, output_file):
             
             packet_num = 0
             saved_packet_num = 0
+            handshake_count = 0
+            teardown_count = 0
             
             for timestamp, buf in pcap_reader:
                 packet_num += 1
@@ -141,6 +144,80 @@ def save_hashed_pcap(pcap_file, output_file):
                         continue
                     
                     tcp = ip.data
+                    
+                    # 检查是否是TCP握手或挥手报文
+                    # 握手报文: SYN标志或无数据的ACK（握手完成）
+                    # 挥手报文: FIN标志或无数据的ACK（挥手确认）
+                    has_syn = (tcp.flags & dpkt.tcp.TH_SYN) != 0
+                    has_fin = (tcp.flags & dpkt.tcp.TH_FIN) != 0
+                    has_no_data = len(tcp.data) == 0
+                    
+                    # 保存条件：有SYN标志、有FIN标志、或者无数据载荷（握手/挥手的ACK）
+                    is_handshake_or_teardown = has_syn or has_fin or has_no_data
+                    
+                    if is_handshake_or_teardown:
+                        # 保存TCP握手/挥手报文（不修改）
+                        new_tcp = dpkt.tcp.TCP(
+                            sport=tcp.sport,
+                            dport=tcp.dport,
+                            seq=tcp.seq,
+                            ack=tcp.ack,
+                            flags=tcp.flags,
+                            win=tcp.win,
+                            data=tcp.data
+                        )
+                        
+                        new_ip = dpkt.ip.IP(
+                            src=ip.src,
+                            dst=ip.dst,
+                            p=dpkt.ip.IP_PROTO_TCP,
+                            data=new_tcp
+                        )
+                        
+                        new_eth = dpkt.ethernet.Ethernet(
+                            dst=eth.dst,
+                            src=eth.src,
+                            type=dpkt.ethernet.ETH_TYPE_IP,
+                            data=new_ip
+                        )
+                        
+                        pcap_writer.writepkt(new_eth, ts=timestamp)
+                        saved_packet_num += 1
+                        
+                        # 判断是握手还是挥手
+                        if has_syn:
+                            handshake_count += 1
+                            packet_type = "TCP握手报文"
+                        elif has_fin:
+                            teardown_count += 1
+                            packet_type = "TCP挥手报文"
+                        else:
+                            # 无数据的ACK，可能是握手完成或挥手确认
+                            # 简单判断：如果序列号较小，可能是握手；否则是挥手
+                            # 但为了简化，我们统一计入握手或挥手
+                            # 这里我们假设如果还没有看到FIN，就是握手相关
+                            if teardown_count > 0:
+                                teardown_count += 1
+                                packet_type = "TCP挥手报文"
+                            else:
+                                handshake_count += 1
+                                packet_type = "TCP握手报文"
+                        
+                        print(f"数据包 #{packet_num}: 保存{packet_type}")
+                        print(f"  源地址: {dpkt.utils.inet_to_str(ip.src)}:{tcp.sport}")
+                        print(f"  目标地址: {dpkt.utils.inet_to_str(ip.dst)}:{tcp.dport}")
+                        print(f"  时间戳: {timestamp}")
+                        
+                        flags = []
+                        if tcp.flags & dpkt.tcp.TH_SYN:
+                            flags.append('SYN')
+                        if tcp.flags & dpkt.tcp.TH_ACK:
+                            flags.append('ACK')
+                        if tcp.flags & dpkt.tcp.TH_FIN:
+                            flags.append('FIN')
+                        print(f"  标志: {','.join(flags)}")
+                        print()
+                        continue
                     
                     # 检查TCP数据长度
                     if len(tcp.data) == 0:
@@ -217,6 +294,9 @@ def save_hashed_pcap(pcap_file, output_file):
             print(f"处理完成:")
             print(f"  输入数据包总数: {packet_num}")
             print(f"  保存到新PCAP的数据包数: {saved_packet_num}")
+            print(f"    - TCP握手报文: {handshake_count}")
+            print(f"    - TLS加密数据(SHA256): {saved_packet_num - handshake_count - teardown_count}")
+            print(f"    - TCP挥手报文: {teardown_count}")
             print(f"  输出文件: {output_file}")
             print("=" * 80)
     

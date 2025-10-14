@@ -47,7 +47,8 @@ def test_save_pcap():
     print()
     
     # 读取原始和输出PCAP文件进行验证
-    original_packets = []
+    # 只验证TLS Application Data包
+    original_app_data_packets = []
     with open('sample_tls.pcap', 'rb') as f:
         pcap = dpkt.pcap.Reader(f)
         for timestamp, buf in pcap:
@@ -65,7 +66,7 @@ def test_save_pcap():
             length = int.from_bytes(tcp.data[3:5], byteorder='big')
             fragment = tcp.data[5:5+length]
             
-            original_packets.append({
+            original_app_data_packets.append({
                 'timestamp': timestamp,
                 'src_ip': dpkt.utils.inet_to_str(ip.src),
                 'dst_ip': dpkt.utils.inet_to_str(ip.dst),
@@ -75,7 +76,7 @@ def test_save_pcap():
                 'sha256': hashlib.sha256(fragment).digest()
             })
     
-    output_packets = []
+    output_app_data_packets = []
     with open(output_file, 'rb') as f:
         pcap = dpkt.pcap.Reader(f)
         for timestamp, buf in pcap:
@@ -83,19 +84,21 @@ def test_save_pcap():
             ip = eth.data
             tcp = ip.data
             
-            output_packets.append({
-                'timestamp': timestamp,
-                'src_ip': dpkt.utils.inet_to_str(ip.src),
-                'dst_ip': dpkt.utils.inet_to_str(ip.dst),
-                'src_port': tcp.sport,
-                'dst_port': tcp.dport,
-                'payload': tcp.data
-            })
+            # 只关注有32字节数据的包（SHA256哈希后的应用数据）
+            if len(tcp.data) == 32:
+                output_app_data_packets.append({
+                    'timestamp': timestamp,
+                    'src_ip': dpkt.utils.inet_to_str(ip.src),
+                    'dst_ip': dpkt.utils.inet_to_str(ip.dst),
+                    'src_port': tcp.sport,
+                    'dst_port': tcp.dport,
+                    'payload': tcp.data
+                })
     
-    # 验证三个核心要求
-    print("要求1: 通信双方的IP和端口不变")
+    # 验证三个核心要求（针对TLS Application Data）
+    print("要求1: 通信双方的IP和端口不变 (TLS应用数据)")
     all_match = True
-    for i, (orig, out) in enumerate(zip(original_packets, output_packets), 1):
+    for i, (orig, out) in enumerate(zip(original_app_data_packets, output_app_data_packets), 1):
         ip_port_match = (
             orig['src_ip'] == out['src_ip'] and
             orig['dst_ip'] == out['dst_ip'] and
@@ -114,9 +117,9 @@ def test_save_pcap():
     else:
         print("  结果: 失败 ✗\n")
     
-    print("要求2: 每个TCP包的PCAP的时间戳不变")
+    print("要求2: 每个TCP包的PCAP的时间戳不变 (TLS应用数据)")
     timestamp_match = True
-    for i, (orig, out) in enumerate(zip(original_packets, output_packets), 1):
+    for i, (orig, out) in enumerate(zip(original_app_data_packets, output_app_data_packets), 1):
         if abs(orig['timestamp'] - out['timestamp']) < 0.0001:  # 允许浮点误差
             print(f"  ✓ 数据包 #{i}: 时间戳 {orig['timestamp']} (匹配)")
         else:
@@ -130,7 +133,7 @@ def test_save_pcap():
     
     print("要求3: TCP载荷为原始加密载荷的SHA256哈希值")
     sha256_match = True
-    for i, (orig, out) in enumerate(zip(original_packets, output_packets), 1):
+    for i, (orig, out) in enumerate(zip(original_app_data_packets, output_app_data_packets), 1):
         if orig['sha256'] == out['payload']:
             print(f"  ✓ 数据包 #{i}: SHA256匹配")
             print(f"    原始载荷长度: {len(orig['payload'])} bytes")
@@ -144,8 +147,65 @@ def test_save_pcap():
     else:
         print("  结果: 失败 ✗\n")
     
+    # 验证TCP握手和挥手报文
+    print("要求4: 保存TCP三次握手和四次挥手报文")
+    
+    # 读取所有输出包
+    all_output_packets = []
+    with open(output_file, 'rb') as f:
+        pcap = dpkt.pcap.Reader(f)
+        for timestamp, buf in pcap:
+            eth = dpkt.ethernet.Ethernet(buf)
+            ip = eth.data
+            tcp = ip.data
+            
+            all_output_packets.append({
+                'timestamp': timestamp,
+                'src_ip': dpkt.utils.inet_to_str(ip.src),
+                'dst_ip': dpkt.utils.inet_to_str(ip.dst),
+                'src_port': tcp.sport,
+                'dst_port': tcp.dport,
+                'flags': tcp.flags,
+                'data_len': len(tcp.data)
+            })
+    
+    # 检查TCP握手报文 (应该有3个)
+    handshake_packets = [p for p in all_output_packets if p['flags'] & dpkt.tcp.TH_SYN]
+    handshake_ack = [p for p in all_output_packets if (p['flags'] & dpkt.tcp.TH_ACK) and 
+                     not (p['flags'] & dpkt.tcp.TH_SYN) and 
+                     not (p['flags'] & dpkt.tcp.TH_FIN) and 
+                     p['data_len'] == 0]
+    
+    # 检查TCP挥手报文 (应该有4个)
+    teardown_packets = [p for p in all_output_packets if p['flags'] & dpkt.tcp.TH_FIN]
+    
+    handshake_ok = len(handshake_packets) >= 2  # SYN, SYN-ACK
+    teardown_ok = len(teardown_packets) >= 2  # FIN-ACK packets
+    
+    if len(handshake_packets) > 0:
+        print(f"  ✓ 保存了 {len(handshake_packets)} 个TCP握手报文 (SYN/SYN-ACK)")
+    else:
+        print(f"  ✗ 未找到TCP握手报文")
+        handshake_ok = False
+    
+    if len(handshake_ack) > 0:
+        print(f"  ✓ 保存了 {len(handshake_ack)} 个握手/挥手ACK报文")
+    
+    if len(teardown_packets) > 0:
+        print(f"  ✓ 保存了 {len(teardown_packets)} 个TCP挥手报文 (FIN)")
+    else:
+        print(f"  ✗ 未找到TCP挥手报文")
+        teardown_ok = False
+    
+    print(f"  总输出包数: {len(all_output_packets)}")
+    
+    if handshake_ok and teardown_ok:
+        print("  结果: 通过 ✓\n")
+    else:
+        print("  结果: 失败 ✗\n")
+    
     print("=" * 80)
-    if all_match and timestamp_match and sha256_match:
+    if all_match and timestamp_match and sha256_match and handshake_ok and teardown_ok:
         print("🎉 所有测试通过! (All tests passed!)")
         print("=" * 80)
         
