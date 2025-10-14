@@ -112,6 +112,7 @@ def save_hashed_pcap(pcap_file, output_file):
     2. 每个TCP包的PCAP的时间戳不变
     3. TCP载荷为原始加密载荷的SHA256哈希值
     4. 保存TCP三次握手和四次挥手报文
+    5. 修正TCP序列号和确认号，确保一致性
     """
     print(f"正在处理PCAP文件: {pcap_file}")
     print(f"输出文件: {output_file}\n")
@@ -134,6 +135,12 @@ def save_hashed_pcap(pcap_file, output_file):
             # 跟踪是否已开始挥手
             # Track whether teardown has started
             teardown_started = False
+            
+            # 跟踪每个方向的下一个期望序列号 (Track next expected sequence number for each direction)
+            # Key: (src_ip, src_port, dst_ip, dst_port), Value: next expected seq number
+            next_seq_by_direction = {}
+            # 跟踪每个方向当前应该使用的序列号 (Track current sequence number to use for each direction)
+            current_seq_by_direction = {}
             
             for timestamp, buf in pcap_reader:
                 packet_num += 1
@@ -196,13 +203,40 @@ def save_hashed_pcap(pcap_file, output_file):
                     
                     is_handshake_or_teardown = should_save
                     
+                    # 定义连接的键
+                    src_key = (ip.src, tcp.sport, ip.dst, tcp.dport)
+                    dst_key = (ip.dst, tcp.dport, ip.src, tcp.sport)
+                    
                     if is_handshake_or_teardown:
-                        # 保存TCP握手/挥手报文（不修改）
+                        # 对于握手和挥手报文，建立或更新序列号映射
+                        
+                        # 如果这是第一次看到这个方向的包，初始化映射
+                        if src_key not in current_seq_by_direction:
+                            current_seq_by_direction[src_key] = tcp.seq
+                            next_seq_by_direction[src_key] = tcp.seq
+                        
+                        # 获取应该使用的序列号
+                        use_seq = next_seq_by_direction[src_key]
+                        
+                        # 获取ACK号（参考对方的下一个期望序列号）
+                        use_ack = next_seq_by_direction.get(dst_key, tcp.ack) if tcp.ack > 0 else 0
+                        
+                        # 计算这个包消耗的序列号空间
+                        seq_consumed = len(tcp.data)
+                        if tcp.flags & dpkt.tcp.TH_SYN:
+                            seq_consumed += 1
+                        if tcp.flags & dpkt.tcp.TH_FIN:
+                            seq_consumed += 1
+                        
+                        # 更新下一个期望的序列号
+                        next_seq_by_direction[src_key] = use_seq + seq_consumed
+                        
+                        # 保存TCP握手/挥手报文
                         new_tcp = dpkt.tcp.TCP(
                             sport=tcp.sport,
                             dport=tcp.dport,
-                            seq=tcp.seq,
-                            ack=tcp.ack,
+                            seq=use_seq,
+                            ack=use_ack,
                             flags=tcp.flags,
                             win=tcp.win,
                             data=tcp.data
@@ -244,8 +278,18 @@ def save_hashed_pcap(pcap_file, output_file):
                         if tcp.flags & dpkt.tcp.TH_FIN:
                             flags.append('FIN')
                         print(f"  标志: {','.join(flags)}")
+                        
+                        if use_seq != tcp.seq or use_ack != tcp.ack:
+                            print(f"  序列号调整: seq {tcp.seq} -> {use_seq}, ack {tcp.ack} -> {use_ack}")
                         print()
                         continue
+                    
+                    # 对于非握手/挥手包，更新next_seq以跟踪实际流中的序列号
+                    # 即使我们不保存这些包，也需要跟踪它们消耗的序列号
+                    if len(tcp.data) > 0:
+                        # 这个包有数据，更新实际流中的序列号位置
+                        # 但不影响输出PCAP中的序列号
+                        pass
                     
                     # 检查TCP数据长度
                     if len(tcp.data) == 0:
@@ -269,12 +313,35 @@ def save_hashed_pcap(pcap_file, output_file):
                                 # 计算SHA256哈希
                                 sha256_hash = hashlib.sha256(record['fragment']).digest()
                                 
+                                # 定义连接的键
+                                src_key = (ip.src, tcp.sport, ip.dst, tcp.dport)
+                                dst_key = (ip.dst, tcp.dport, ip.src, tcp.sport)
+                                
+                                # 如果这是第一次看到这个方向的包，初始化映射
+                                if src_key not in current_seq_by_direction:
+                                    current_seq_by_direction[src_key] = tcp.seq
+                                    next_seq_by_direction[src_key] = tcp.seq
+                                
+                                # 获取应该使用的序列号
+                                use_seq = next_seq_by_direction[src_key]
+                                
+                                # 获取ACK号（参考对方的下一个期望序列号）
+                                use_ack = next_seq_by_direction.get(dst_key, tcp.ack) if tcp.ack > 0 else 0
+                                
+                                # 计算这个包消耗的序列号空间（使用新的数据长度）
+                                seq_consumed = len(sha256_hash)
+                                if tcp.flags & dpkt.tcp.TH_PUSH:
+                                    pass  # PUSH flag doesn't consume seq
+                                
+                                # 更新下一个期望的序列号
+                                next_seq_by_direction[src_key] = use_seq + seq_consumed
+                                
                                 # 创建新的TCP包，载荷为SHA256哈希值
                                 new_tcp = dpkt.tcp.TCP(
                                     sport=tcp.sport,
                                     dport=tcp.dport,
-                                    seq=tcp.seq,
-                                    ack=tcp.ack,
+                                    seq=use_seq,
+                                    ack=use_ack,
                                     flags=tcp.flags,
                                     win=tcp.win,
                                     data=sha256_hash
@@ -300,10 +367,12 @@ def save_hashed_pcap(pcap_file, output_file):
                                 pcap_writer.writepkt(new_eth, ts=timestamp)
                                 saved_packet_num += 1
                                 
-                                print(f"数据包 #{packet_num}: 保存SHA256哈希 ({len(record['fragment'])} bytes -> {len(sha256_hash)} bytes)")
+                                print(f"数据包 #{packet_num}: 保存SHA256哈希 ({len(tcp.data)} bytes -> {len(sha256_hash)} bytes)")
                                 print(f"  源地址: {dpkt.utils.inet_to_str(ip.src)}:{tcp.sport}")
                                 print(f"  目标地址: {dpkt.utils.inet_to_str(ip.dst)}:{tcp.dport}")
                                 print(f"  时间戳: {timestamp}")
+                                print(f"  原始seq: {tcp.seq}, 使用seq: {use_seq}")
+                                print(f"  原始ack: {tcp.ack}, 使用ack: {use_ack}")
                                 print(f"  SHA256: {sha256_hash.hex()}")
                                 print()
                             
