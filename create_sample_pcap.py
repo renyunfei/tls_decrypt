@@ -116,6 +116,96 @@ def create_sample_pcap(filename='sample_tls.pcap'):
         dst_port = 443
         
         timestamp = time.time()
+        seq_client = 1000
+        seq_server = 2000
+        
+        # TCP三次握手 (Three-way handshake)
+        # 1. SYN from client
+        tcp_syn = dpkt.tcp.TCP(
+            sport=src_port,
+            dport=dst_port,
+            seq=seq_client,
+            ack=0,
+            flags=dpkt.tcp.TH_SYN,
+            win=65535,
+            data=b''
+        )
+        
+        ip_syn = dpkt.ip.IP(
+            src=src_ip,
+            dst=dst_ip,
+            p=dpkt.ip.IP_PROTO_TCP,
+            data=tcp_syn
+        )
+        
+        eth_syn = dpkt.ethernet.Ethernet(
+            dst=b'\x00\x11\x22\x33\x44\x55',
+            src=b'\x66\x77\x88\x99\xaa\xbb',
+            type=dpkt.ethernet.ETH_TYPE_IP,
+            data=ip_syn
+        )
+        
+        pcap_writer.writepkt(eth_syn, ts=timestamp)
+        print(f"  ✓ 添加了TCP SYN包 (三次握手 1/3)")
+        
+        # 2. SYN-ACK from server
+        tcp_synack = dpkt.tcp.TCP(
+            sport=dst_port,
+            dport=src_port,
+            seq=seq_server,
+            ack=seq_client + 1,
+            flags=dpkt.tcp.TH_SYN | dpkt.tcp.TH_ACK,
+            win=65535,
+            data=b''
+        )
+        
+        ip_synack = dpkt.ip.IP(
+            src=dst_ip,
+            dst=src_ip,
+            p=dpkt.ip.IP_PROTO_TCP,
+            data=tcp_synack
+        )
+        
+        eth_synack = dpkt.ethernet.Ethernet(
+            dst=b'\x66\x77\x88\x99\xaa\xbb',
+            src=b'\x00\x11\x22\x33\x44\x55',
+            type=dpkt.ethernet.ETH_TYPE_IP,
+            data=ip_synack
+        )
+        
+        pcap_writer.writepkt(eth_synack, ts=timestamp + 0.01)
+        print(f"  ✓ 添加了TCP SYN-ACK包 (三次握手 2/3)")
+        
+        # 3. ACK from client
+        seq_client += 1
+        seq_server += 1
+        
+        tcp_ack = dpkt.tcp.TCP(
+            sport=src_port,
+            dport=dst_port,
+            seq=seq_client,
+            ack=seq_server,
+            flags=dpkt.tcp.TH_ACK,
+            win=65535,
+            data=b''
+        )
+        
+        ip_ack = dpkt.ip.IP(
+            src=src_ip,
+            dst=dst_ip,
+            p=dpkt.ip.IP_PROTO_TCP,
+            data=tcp_ack
+        )
+        
+        eth_ack = dpkt.ethernet.Ethernet(
+            dst=b'\x00\x11\x22\x33\x44\x55',
+            src=b'\x66\x77\x88\x99\xaa\xbb',
+            type=dpkt.ethernet.ETH_TYPE_IP,
+            data=ip_ack
+        )
+        
+        pcap_writer.writepkt(eth_ack, ts=timestamp + 0.02)
+        print(f"  ✓ 添加了TCP ACK包 (三次握手 3/3)")
         
         # 1. 创建Client Hello包
         client_hello = create_tls_client_hello()
@@ -123,8 +213,8 @@ def create_sample_pcap(filename='sample_tls.pcap'):
         tcp_client = dpkt.tcp.TCP(
             sport=src_port,
             dport=dst_port,
-            seq=1000,
-            ack=0,
+            seq=seq_client,
+            ack=seq_server,
             flags=dpkt.tcp.TH_PUSH | dpkt.tcp.TH_ACK,
             data=client_hello
         )
@@ -143,8 +233,9 @@ def create_sample_pcap(filename='sample_tls.pcap'):
             data=ip_client
         )
         
-        pcap_writer.writepkt(eth_client, ts=timestamp)
+        pcap_writer.writepkt(eth_client, ts=timestamp + 0.03)
         print(f"  ✓ 添加了Client Hello包")
+        seq_client += len(client_hello)
         
         # 2. 创建Server Hello包
         server_hello = create_tls_server_hello()
@@ -152,8 +243,8 @@ def create_sample_pcap(filename='sample_tls.pcap'):
         tcp_server = dpkt.tcp.TCP(
             sport=dst_port,
             dport=src_port,
-            seq=2000,
-            ack=1000 + len(client_hello),
+            seq=seq_server,
+            ack=seq_client,
             flags=dpkt.tcp.TH_PUSH | dpkt.tcp.TH_ACK,
             data=server_hello
         )
@@ -172,8 +263,9 @@ def create_sample_pcap(filename='sample_tls.pcap'):
             data=ip_server
         )
         
-        pcap_writer.writepkt(eth_server, ts=timestamp + 0.1)
+        pcap_writer.writepkt(eth_server, ts=timestamp + 0.04)
         print(f"  ✓ 添加了Server Hello包")
+        seq_server += len(server_hello)
         
         # 3. 创建加密应用数据包
         app_data = create_tls_application_data()
@@ -181,8 +273,8 @@ def create_sample_pcap(filename='sample_tls.pcap'):
         tcp_app = dpkt.tcp.TCP(
             sport=src_port,
             dport=dst_port,
-            seq=1000 + len(client_hello),
-            ack=2000 + len(server_hello),
+            seq=seq_client,
+            ack=seq_server,
             flags=dpkt.tcp.TH_PUSH | dpkt.tcp.TH_ACK,
             data=app_data
         )
@@ -201,14 +293,132 @@ def create_sample_pcap(filename='sample_tls.pcap'):
             data=ip_app
         )
         
-        pcap_writer.writepkt(eth_app, ts=timestamp + 0.2)
+        pcap_writer.writepkt(eth_app, ts=timestamp + 0.05)
         print(f"  ✓ 添加了加密应用数据包")
+        seq_client += len(app_data)
+        
+        # TCP四次挥手 (Four-way teardown)
+        # 1. FIN-ACK from client
+        tcp_fin1 = dpkt.tcp.TCP(
+            sport=src_port,
+            dport=dst_port,
+            seq=seq_client,
+            ack=seq_server,
+            flags=dpkt.tcp.TH_FIN | dpkt.tcp.TH_ACK,
+            win=65535,
+            data=b''
+        )
+        
+        ip_fin1 = dpkt.ip.IP(
+            src=src_ip,
+            dst=dst_ip,
+            p=dpkt.ip.IP_PROTO_TCP,
+            data=tcp_fin1
+        )
+        
+        eth_fin1 = dpkt.ethernet.Ethernet(
+            dst=b'\x00\x11\x22\x33\x44\x55',
+            src=b'\x66\x77\x88\x99\xaa\xbb',
+            type=dpkt.ethernet.ETH_TYPE_IP,
+            data=ip_fin1
+        )
+        
+        pcap_writer.writepkt(eth_fin1, ts=timestamp + 0.06)
+        print(f"  ✓ 添加了TCP FIN-ACK包 (四次挥手 1/4)")
+        seq_client += 1
+        
+        # 2. ACK from server
+        tcp_ack2 = dpkt.tcp.TCP(
+            sport=dst_port,
+            dport=src_port,
+            seq=seq_server,
+            ack=seq_client,
+            flags=dpkt.tcp.TH_ACK,
+            win=65535,
+            data=b''
+        )
+        
+        ip_ack2 = dpkt.ip.IP(
+            src=dst_ip,
+            dst=src_ip,
+            p=dpkt.ip.IP_PROTO_TCP,
+            data=tcp_ack2
+        )
+        
+        eth_ack2 = dpkt.ethernet.Ethernet(
+            dst=b'\x66\x77\x88\x99\xaa\xbb',
+            src=b'\x00\x11\x22\x33\x44\x55',
+            type=dpkt.ethernet.ETH_TYPE_IP,
+            data=ip_ack2
+        )
+        
+        pcap_writer.writepkt(eth_ack2, ts=timestamp + 0.07)
+        print(f"  ✓ 添加了TCP ACK包 (四次挥手 2/4)")
+        
+        # 3. FIN-ACK from server
+        tcp_fin2 = dpkt.tcp.TCP(
+            sport=dst_port,
+            dport=src_port,
+            seq=seq_server,
+            ack=seq_client,
+            flags=dpkt.tcp.TH_FIN | dpkt.tcp.TH_ACK,
+            win=65535,
+            data=b''
+        )
+        
+        ip_fin2 = dpkt.ip.IP(
+            src=dst_ip,
+            dst=src_ip,
+            p=dpkt.ip.IP_PROTO_TCP,
+            data=tcp_fin2
+        )
+        
+        eth_fin2 = dpkt.ethernet.Ethernet(
+            dst=b'\x66\x77\x88\x99\xaa\xbb',
+            src=b'\x00\x11\x22\x33\x44\x55',
+            type=dpkt.ethernet.ETH_TYPE_IP,
+            data=ip_fin2
+        )
+        
+        pcap_writer.writepkt(eth_fin2, ts=timestamp + 0.08)
+        print(f"  ✓ 添加了TCP FIN-ACK包 (四次挥手 3/4)")
+        seq_server += 1
+        
+        # 4. ACK from client
+        tcp_ack3 = dpkt.tcp.TCP(
+            sport=src_port,
+            dport=dst_port,
+            seq=seq_client,
+            ack=seq_server,
+            flags=dpkt.tcp.TH_ACK,
+            win=65535,
+            data=b''
+        )
+        
+        ip_ack3 = dpkt.ip.IP(
+            src=src_ip,
+            dst=dst_ip,
+            p=dpkt.ip.IP_PROTO_TCP,
+            data=tcp_ack3
+        )
+        
+        eth_ack3 = dpkt.ethernet.Ethernet(
+            dst=b'\x00\x11\x22\x33\x44\x55',
+            src=b'\x66\x77\x88\x99\xaa\xbb',
+            type=dpkt.ethernet.ETH_TYPE_IP,
+            data=ip_ack3
+        )
+        
+        pcap_writer.writepkt(eth_ack3, ts=timestamp + 0.09)
+        print(f"  ✓ 添加了TCP ACK包 (四次挥手 4/4)")
     
     print(f"\n示例PCAP文件创建成功: {filename}")
     print(f"包含:")
+    print(f"  - TCP三次握手 (3个包)")
     print(f"  - 1个Client Hello (带Random)")
     print(f"  - 1个Server Hello (带Random)")
     print(f"  - 1个加密应用数据")
+    print(f"  - TCP四次挥手 (4个包)")
 
 
 if __name__ == "__main__":
