@@ -282,7 +282,7 @@ class TLSParser:
             offset += 5 + record.length
             
             # 安全检查，避免无限循环
-            if offset >= len(tcp.data) or record.length == 0:
+            if offset >= len(tcp.data):
                 break
     
     def _display_tls_record(self, record, record_num):
@@ -298,7 +298,7 @@ class TLSParser:
         # 如果是握手消息，提取random
         if record.is_handshake() and record.fragment:
             handshake = record.get_handshake()
-            if handshake and handshake.random:
+            if handshake and handshake.random and handshake.handshake_type_name:
                 print(f"\n【Random值】 ({handshake.handshake_type_name}):")
                 print(HexFormatter.format(handshake.random, "  "))
         
@@ -529,7 +529,7 @@ class PCAPProcessor:
                 offset += 5 + record.length
                 
                 # 安全检查，避免无限循环
-                if offset >= len(tcp.data) or record.length == 0:
+                if offset >= len(tcp.data):
                     break
     
     def _save_hashed_data_packet(self, eth, ip, tcp, timestamp, fragment, pcap_writer):
